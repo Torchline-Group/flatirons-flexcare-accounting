@@ -1,0 +1,202 @@
+"use client";
+
+import { useMemo, useState } from "react";
+import Papa from "papaparse";
+
+type Row = {
+  id?: string;
+  Date?: string;
+  "Ref No."?: string;
+  Payee?: string;
+  Memo?: string;
+  Payment?: string;
+  Deposit?: string;
+  "Reconciliation Status"?: string;
+  Balance?: string;
+  Type?: string;
+  Account?: string;
+  "Added in Banking"?: string;
+};
+
+type Txn = {
+  date: string;
+  refNo: string;
+  payee: string;
+  memo: string;
+  payment: number;
+  deposit: number;
+  status: string;
+  balance: number;
+  type: string;
+  account: string;
+  addedInBanking: string;
+};
+
+function money(v: string | undefined) {
+  const cleaned = (v || "").replace(/[$,]/g, "").trim();
+  if (!cleaned) return 0;
+  const n = Number(cleaned);
+  return Number.isFinite(n) ? n : 0;
+}
+
+function txt(v: string | undefined) {
+  return (v || "").trim();
+}
+
+export default function Page() {
+  const [rows, setRows] = useState<Txn[]>([]);
+  const [error, setError] = useState<string>("");
+  const [loading, setLoading] = useState(false);
+
+  const totals = useMemo(() => {
+    const income = rows.reduce((sum, r) => sum + r.deposit, 0);
+    const expenses = rows.reduce((sum, r) => sum + r.payment, 0);
+    const net = income - expenses;
+    return { income, expenses, net };
+  }, [rows]);
+
+  const byAccount = useMemo(() => {
+    const map = new Map<
+      string,
+      { account: string; deposits: number; payments: number; net: number; count: number }
+    >();
+
+    for (const r of rows) {
+      const key = r.account || "Uncategorized";
+      const cur = map.get(key) || {
+        account: key,
+        deposits: 0,
+        payments: 0,
+        net: 0,
+        count: 0,
+      };
+      cur.deposits += r.deposit;
+      cur.payments += r.payment;
+      cur.net += r.deposit - r.payment;
+      cur.count += 1;
+      map.set(key, cur);
+    }
+
+    return [...map.values()].sort((a, b) => Math.abs(b.net) - Math.abs(a.net));
+  }, [rows]);
+
+  async function onFile(file: File | null) {
+    if (!file) return;
+    setError("");
+    setLoading(true);
+
+    try {
+      const text = await file.text();
+      const parsed = Papa.parse<Row>(text, {
+        header: true,
+        skipEmptyLines: true,
+      });
+
+      if (parsed.errors.length) {
+        throw new Error(parsed.errors[0].message);
+      }
+
+      const cleaned: Txn[] = (parsed.data || [])
+        .filter((r) => r.Date || r.Payee || r.Account)
+        .map((r) => ({
+          date: txt(r.Date),
+          refNo: txt(r["Ref No."]),
+          payee: txt(r.Payee),
+          memo: txt(r.Memo),
+          payment: money(r.Payment),
+          deposit: money(r.Deposit),
+          status: txt(r["Reconciliation Status"]),
+          balance: money(r.Balance),
+          type: txt(r.Type),
+          account: txt(r.Account) || "Uncategorized",
+          addedInBanking: txt(r["Added in Banking"]),
+        }))
+        .filter((r) => r.date);
+
+      setRows(cleaned);
+    } catch (e: any) {
+      setError(e?.message || "Failed to parse CSV");
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <main style={{ fontFamily: "Arial, sans-serif", padding: 24, maxWidth: 1200, margin: "0 auto" }}>
+      <h1 style={{ fontSize: 32, fontWeight: 700, marginBottom: 8 }}>
+        Flatirons Flexcare Accounting Dashboard
+      </h1>
+      <p style={{ color: "#555", marginBottom: 24 }}>
+        Upload your bookkeeping CSV and get totals by category instantly.
+      </p>
+
+      <div style={{ marginBottom: 24 }}>
+        <input
+          type="file"
+          accept=".csv"
+          onChange={(e) => onFile(e.target.files?.[0] || null)}
+        />
+      </div>
+
+      {loading && <p>Parsing CSV...</p>}
+      {error && <p style={{ color: "crimson" }}>{error}</p>}
+
+      {rows.length > 0 && (
+        <>
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(3, minmax(0, 1fr))", gap: 16, marginBottom: 24 }}>
+            <Card title="Total Deposits" value={totals.income} color="#0a7a28" />
+            <Card title="Total Payments" value={totals.expenses} color="#b42318" />
+            <Card title="Net" value={totals.net} color={totals.net >= 0 ? "#0a7a28" : "#b42318"} />
+          </div>
+
+          <h2 style={{ fontSize: 24, margin: "24px 0 12px" }}>Totals by Account</h2>
+          <div style={{ overflowX: "auto", border: "1px solid #ddd", borderRadius: 8 }}>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#f7f7f7", textAlign: "left" }}>
+                  <Th>Account</Th>
+                  <Th>Txns</Th>
+                  <Th>Deposits</Th>
+                  <Th>Payments</Th>
+                  <Th>Net</Th>
+                </tr>
+              </thead>
+              <tbody>
+                {byAccount.map((r) => (
+                  <tr key={r.account}>
+                    <Td>{r.account}</Td>
+                    <Td>{r.count}</Td>
+                    <Td>${r.deposits.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Td>
+                    <Td>${r.payments.toLocaleString(undefined, { minimumFractionDigits: 2 })}</Td>
+                    <Td style={{ color: r.net >= 0 ? "#0a7a28" : "#b42318" }}>
+                      ${r.net.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                    </Td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </>
+      )}
+    </main>
+  );
+}
+
+function Card({ title, value, color }: { title: string; value: number; color: string }) {
+  return (
+    <div style={{ border: "1px solid #ddd", borderRadius: 12, padding: 18, background: "#fff" }}>
+      <div style={{ color: "#666", fontSize: 14, marginBottom: 8 }}>{title}</div>
+      <div style={{ fontSize: 28, fontWeight: 700, color }}>
+        ${value.toLocaleString(undefined, { minimumFractionDigits: 2 })}
+      </div>
+    </div>
+  );
+}
+
+function Th({ children }: { children: React.ReactNode }) {
+  return <th style={{ padding: 12, borderBottom: "1px solid #e5e5e5" }}>{children}</th>;
+}
+
+function Td({ children }: { children: React.ReactNode }) {
+  return <td style={{ padding: 12, borderBottom: "1px solid #eee" }}>{children}</td>;
+}
