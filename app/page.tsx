@@ -20,7 +20,7 @@ import {
 
 type Row = {
   id: string
-  Date_Value: string | null
+  Date_Value: Date | null
   Ref_No: string | null
   Payee: string | null
   Memo: string | null
