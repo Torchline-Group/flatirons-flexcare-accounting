@@ -829,8 +829,6 @@ function Th({ children }: { children: React.ReactNode }) {
   );
 }
 
-import type { TdHTMLAttributes } from "react";
-
 function Td({ children, style, ...props }: TdHTMLAttributes<HTMLTableCellElement>)  {
   return (
     <td
