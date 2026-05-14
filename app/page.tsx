@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { createClient } from "@/lib/supabase/client"
+import { createClientInstance } from "@/lib/supabase/client"
 
 type Row = {
   id: string
@@ -24,7 +24,7 @@ export default function Home() {
   const [error, setError] = React.useState("")
 
   React.useEffect(() => {
-    const supabase = createClient()
+    const supabase = createClientInstance()
 
     async function load() {
       setLoading(true)
