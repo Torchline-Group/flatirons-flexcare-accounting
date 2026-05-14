@@ -63,7 +63,7 @@ export default function Page() {
       setError("")
 
       const { data, error } = await supabase
-        .from("Transactions-List")
+        .from("Transactions_List")
         .select("*")
         .order("Date_Value", { ascending: false })
 
