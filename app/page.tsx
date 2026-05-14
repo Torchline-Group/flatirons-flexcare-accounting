@@ -1,7 +1,7 @@
 "use client"
 
 import * as React from "react"
-import { createClientInstance } from "@/lib/supabase/client"
+import { createClient } from "@/lib/supabase/client"
 
 type Row = {
   id: string
