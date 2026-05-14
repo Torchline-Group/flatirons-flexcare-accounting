@@ -76,7 +76,7 @@ export default function Page() {
   const [loading, setLoading] = React.useState(false)
   const [activeTab, setActiveTab] = React.useState<"dashboard" | "transfers" | "settings">("dashboard")
   const [bankAccounts, setBankAccounts] = React.useState<BankAccount[]>([
-    { id: "1", name: "Business Checking", last4: "4242", bankName: "Chase", isDefault: true },
+    { id: "01338012-351d-4372-a521-406e8e4cd4be", name: "ONLINE TRANSFER TO ACCT ENDING 2", Ref_No: "NULL", bankName: "First National Bank", isDefault: true },
   ])
   const [transfers, setTransfers] = React.useState<Transfer[]>([
     { id: "t1", date: "2026-05-13", type: "receive", amount: 5000, recipient: "Client A Payment", status: "completed", processor: "stripe" },
