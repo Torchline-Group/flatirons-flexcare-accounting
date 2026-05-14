@@ -33,6 +33,14 @@ type Row = {
   Added_in_Banking: string | null
 }
 
+type TxKind = "ar" | "ap" | "transfers" | "misc"
+
+type TxRow = Row & {
+  kind: TxKind
+  amount: number
+  month: string
+}
+
 type MonthlyRow = {
   month: string
   ar: number
@@ -62,20 +70,25 @@ function monthKey(dateStr: string | null | undefined) {
   return d.toLocaleDateString("en-US", { month: "short", year: "numeric" })
 }
 
-function txKind(row: Row) {
+function txKind(row: Row): TxKind {
   const t = (row.Type ?? "").toLowerCase()
   const memo = `${row.Memo ?? ""} ${row.Payee ?? ""} ${row.Added_in_Banking ?? ""}`.toLowerCase()
 
-  if (t.includes("deposit") || parseAmount(row.Deposit) > 0) return "ar"
-  if (t.includes("payment") || parseAmount(row.Payment) > 0) return "ap"
-  if (memo.includes("transfer") || t.includes("transfer")) return "transfers"
+  if (t.includes("transfer") || memo.includes("transfer")) return "transfers"
+  if (parseAmount(row.Deposit) > 0) return "ar"
+  if (parseAmount(row.Payment) > 0) return "ap"
   return "misc"
+}
+
+function money(v: number) {
+  return `$${v.toLocaleString(undefined, { maximumFractionDigits: 2 })}`
 }
 
 export default function Home() {
   const [rows, setRows] = React.useState<Row[]>([])
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState("")
+  const [filter, setFilter] = React.useState<"all" | TxKind>("all")
 
   React.useEffect(() => {
     const supabase = createClient()
@@ -102,14 +115,34 @@ export default function Home() {
     load()
   }, [])
 
+  const txRows = React.useMemo<TxRow[]>(() => {
+    return rows.map((r) => {
+      const kind = txKind(r)
+      const ar = parseAmount(r.Deposit)
+      const ap = parseAmount(r.Payment)
+      const amount = ar > 0 ? ar : ap > 0 ? ap : 0
+
+      return {
+        ...r,
+        kind,
+        amount,
+        month: monthKey(r.Date_Value),
+      }
+    })
+  }, [rows])
+
+  const filteredRows = React.useMemo(() => {
+    if (filter === "all") return txRows
+    return txRows.filter((r) => r.kind === filter)
+  }, [txRows, filter])
+
   const monthly = React.useMemo(() => {
     const map = new Map<string, MonthlyRow>()
 
-    for (const r of rows) {
-      const month = monthKey(r.Date_Value)
+    for (const r of txRows) {
       const cur =
-        map.get(month) ?? {
-          month,
+        map.get(r.month) ?? {
+          month: r.month,
           ar: 0,
           ap: 0,
           transfers: 0,
@@ -118,54 +151,32 @@ export default function Home() {
           total: 0,
         }
 
-      const kind = txKind(r)
-      const ar = parseAmount(r.Deposit)
-      const ap = parseAmount(r.Payment)
-      const amt = ar + ap
+      if (r.kind === "ar") cur.ar += r.amount
+      if (r.kind === "ap") cur.ap += r.amount
+      if (r.kind === "transfers") cur.transfers += r.amount
+      if (r.kind === "misc") cur.misc += r.amount
 
-      cur.ar += kind === "ar" ? ar : 0
-      cur.ap += kind === "ap" ? ap : 0
-      cur.transfers += kind === "transfers" ? amt : 0
-      cur.misc += kind === "misc" ? amt : 0
-      cur.net += ar - ap
-      cur.total += amt
+      cur.net += r.kind === "ar" ? r.amount : r.kind === "ap" ? -r.amount : 0
+      cur.total += r.amount
 
-      map.set(month, cur)
+      map.set(r.month, cur)
     }
 
     return [...map.values()].sort((a, b) => a.month.localeCompare(b.month))
-  }, [rows])
+  }, [txRows])
 
   const totals = React.useMemo(() => {
-    const totalAR = rows.reduce((s, r) => s + (txKind(r) === "ar" ? parseAmount(r.Deposit) : 0), 0)
-    const totalAP = rows.reduce((s, r) => s + (txKind(r) === "ap" ? parseAmount(r.Payment) : 0), 0)
-    const totalTransfers = rows.reduce((s, r) => {
-      const kind = txKind(r)
-      return s + (kind === "transfers" ? parseAmount(r.Deposit) + parseAmount(r.Payment) : 0)
-    }, 0)
-    const totalMisc = rows.reduce((s, r) => {
-      const kind = txKind(r)
-      return s + (kind === "misc" ? parseAmount(r.Deposit) + parseAmount(r.Payment) : 0)
-    }, 0)
-
-    const totalIn = totalAR + totalTransfers + totalMisc
-    const totalOut = totalAP + totalTransfers + totalMisc
+    const totalAR = txRows.filter((r) => r.kind === "ar").reduce((s, r) => s + r.amount, 0)
+    const totalAP = txRows.filter((r) => r.kind === "ap").reduce((s, r) => s + r.amount, 0)
+    const totalTransfers = txRows.filter((r) => r.kind === "transfers").reduce((s, r) => s + r.amount, 0)
+    const totalMisc = txRows.filter((r) => r.kind === "misc").reduce((s, r) => s + r.amount, 0)
     const net = totalAR - totalAP
     const monthlyAverage = monthly.length ? monthly.reduce((s, m) => s + m.total, 0) / monthly.length : 0
 
-    return {
-      totalAR,
-      totalAP,
-      totalTransfers,
-      totalMisc,
-      totalIn,
-      totalOut,
-      net,
-      monthlyAverage,
-    }
-  }, [rows, monthly])
+    return { totalAR, totalAP, totalTransfers, totalMisc, net, monthlyAverage }
+  }, [txRows, monthly])
 
-  const pieData = [
+  const categoryTotals = [
     { name: "AR", value: totals.totalAR },
     { name: "AP", value: totals.totalAP },
     { name: "Transfers", value: totals.totalTransfers },
@@ -177,11 +188,11 @@ export default function Home() {
       <header className="border-b bg-white px-4 py-6">
         <div className="mx-auto max-w-7xl">
           <h1 className="text-2xl font-bold">FlexCare Accounting</h1>
-          <p className="text-sm text-slate-600">Monthly profit/loss and transaction breakdown</p>
+          <p className="text-sm text-slate-600">Monthly P/L, category breakdown, and transaction explorer</p>
         </div>
       </header>
 
-      <main className="mx-auto max-w-7xl px-4 py-8 space-y-8">
+      <main className="mx-auto max-w-7xl space-y-8 px-4 py-8">
         {loading && <p>Loading...</p>}
         {error && <p className="text-red-600">{error}</p>}
 
@@ -190,14 +201,14 @@ export default function Home() {
             <div className="grid gap-4 md:grid-cols-4">
               <Card title="Total AR" value={totals.totalAR} className="bg-green-50" />
               <Card title="Total AP" value={totals.totalAP} className="bg-red-50" />
-              <Card title="Total Transfers" value={totals.totalTransfers} className="bg-yellow-50" />
+              <Card title="Transfers" value={totals.totalTransfers} className="bg-yellow-50" />
               <Card title="Monthly Avg" value={totals.monthlyAverage} className="bg-slate-100" />
             </div>
 
             <div className="grid gap-4 md:grid-cols-3">
               <Card title="Net Profit / Loss" value={totals.net} className={totals.net >= 0 ? "bg-green-50" : "bg-red-50"} />
-              <Card title="Total In" value={totals.totalIn} className="bg-slate-100" />
-              <Card title="Total Out" value={totals.totalOut} className="bg-slate-100" />
+              <Card title="Total In" value={totals.totalAR + totals.totalTransfers + totals.totalMisc} className="bg-slate-100" />
+              <Card title="Total Out" value={totals.totalAP + totals.totalTransfers + totals.totalMisc} className="bg-slate-100" />
             </div>
 
             <section className="rounded-lg border bg-white p-4">
@@ -222,20 +233,15 @@ export default function Home() {
 
             <section className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-lg border bg-white p-4">
-                <h2 className="mb-4 text-lg font-semibold">Breakdown by Category</h2>
+                <h2 className="mb-4 text-lg font-semibold">Category Breakdown</h2>
                 <div className="h-80">
                   <ResponsiveContainer width="100%" height="100%">
                     <PieChart>
-                      <Pie data={pieData} dataKey="value" nameKey="name" outerRadius={110} label>
-                        {pieData.map((entry, index) => (
+                      <Pie data={categoryTotals} dataKey="value" nameKey="name" outerRadius={110} label>
+                        {categoryTotals.map((entry, index) => (
                           <Cell
                             key={entry.name}
-                            fill={
-                              index === 0 ? COLORS.ar :
-                              index === 1 ? COLORS.ap :
-                              index === 2 ? COLORS.transfers :
-                              COLORS.misc
-                            }
+                            fill={index === 0 ? COLORS.ar : index === 1 ? COLORS.ap : index === 2 ? COLORS.transfers : COLORS.misc}
                           />
                         ))}
                       </Pie>
@@ -265,30 +271,66 @@ export default function Home() {
             </section>
 
             <section className="rounded-lg border bg-white p-4">
-              <h2 className="mb-4 text-lg font-semibold">Monthly Summary</h2>
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
+                <h2 className="text-lg font-semibold">Transactions</h2>
+                <div className="flex flex-wrap gap-2">
+                  {[
+                    ["all", "All"],
+                    ["ar", "AR"],
+                    ["ap", "AP"],
+                    ["transfers", "Transfers"],
+                    ["misc", "Misc"],
+                  ].map(([key, label]) => (
+                    <button
+                      key={key}
+                      onClick={() => setFilter(key as "all" | TxKind)}
+                      className={`rounded-full px-4 py-2 text-sm font-medium ${
+                        filter === key
+                          ? "bg-slate-900 text-white"
+                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                      }`}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
                     <tr className="border-b bg-slate-100">
-                      <th className="p-2 text-left">Month</th>
-                      <th className="p-2 text-left">AR</th>
-                      <th className="p-2 text-left">AP</th>
-                      <th className="p-2 text-left">Transfers</th>
-                      <th className="p-2 text-left">Misc</th>
-                      <th className="p-2 text-left">Total</th>
-                      <th className="p-2 text-left">Net</th>
+                      <th className="p-2 text-left">Date</th>
+                      <th className="p-2 text-left">Payee</th>
+                      <th className="p-2 text-left">Memo</th>
+                      <th className="p-2 text-left">Category</th>
+                      <th className="p-2 text-left">Amount</th>
+                      <th className="p-2 text-left">Account</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {monthly.map((m) => (
-                      <tr key={m.month} className="border-b">
-                        <td className="p-2">{m.month}</td>
-                        <td className="p-2">${m.ar.toLocaleString()}</td>
-                        <td className="p-2">${m.ap.toLocaleString()}</td>
-                        <td className="p-2">${m.transfers.toLocaleString()}</td>
-                        <td className="p-2">${m.misc.toLocaleString()}</td>
-                        <td className="p-2">${m.total.toLocaleString()}</td>
-                        <td className="p-2">${m.net.toLocaleString()}</td>
+                    {filteredRows.map((r) => (
+                      <tr key={r.id} className="border-b">
+                        <td className="p-2">{r.Date_Value || ""}</td>
+                        <td className="p-2">{r.Payee || ""}</td>
+                        <td className="p-2">{r.Memo || ""}</td>
+                        <td className="p-2">
+                          <span
+                            className={`rounded-full px-2 py-1 text-xs font-medium ${
+                              r.kind === "ar"
+                                ? "bg-green-100 text-green-700"
+                                : r.kind === "ap"
+                                  ? "bg-red-100 text-red-700"
+                                  : r.kind === "transfers"
+                                    ? "bg-yellow-100 text-yellow-700"
+                                    : "bg-slate-100 text-slate-700"
+                            }`}
+                          >
+                            {r.kind.toUpperCase()}
+                          </span>
+                        </td>
+                        <td className="p-2">${r.amount.toLocaleString()}</td>
+                        <td className="p-2">{r.Bank_Accounts || ""}</td>
                       </tr>
                     ))}
                   </tbody>
