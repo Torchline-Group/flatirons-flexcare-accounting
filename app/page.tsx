@@ -24,7 +24,7 @@ export default function Home() {
   const [error, setError] = React.useState("")
 
   React.useEffect(() => {
-    const supabase = createClientInstance()
+    const supabase = createClient()
 
     async function load() {
       setLoading(true)
