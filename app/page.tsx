@@ -20,7 +20,7 @@ import {
 
 type Row = {
   id: string
-  Date_Value: Date | null
+  Date_Value: string | null
   Ref_No: string | null
   Payee: string | null
   Memo: string | null
@@ -33,12 +33,17 @@ type Row = {
   Added_in_Banking: string | null
 }
 
-type TxKind = "ar" | "ap" | "transfers" | "misc"
+type TxKind = "ar" | "ap" | "transfers" | "misc" | "owner_draw" | "vendor_payment" | "internal_transfer"
+
+type ReviewStatus = "needs_review" | "confirmed" | "ignore"
 
 type TxRow = Row & {
   kind: TxKind
   amount: number
   month: string
+  dateObj: Date | null
+  reviewStatus: ReviewStatus
+  notes: string
 }
 
 type MonthlyRow = {
@@ -56,6 +61,9 @@ const COLORS = {
   ap: "#fee2e2",
   transfers: "#fef9c3",
   misc: "#e5e7eb",
+  owner_draw: "#dbeafe",
+  vendor_payment: "#fce7f3",
+  internal_transfer: "#ede9fe",
 }
 
 function parseAmount(v: string | null | undefined) {
@@ -63,21 +71,62 @@ function parseAmount(v: string | null | undefined) {
   return Number.isFinite(n) ? n : 0
 }
 
-function monthKey(dateStr: string | null | undefined) {
-  if (!dateStr) return "Unknown"
-  const d = new Date(dateStr)
-  if (Number.isNaN(d.getTime())) return "Unknown"
-  return d.toLocaleDateString("en-US", { month: "short", year: "numeric" })
+function parseDate(v: string | null | undefined) {
+  if (!v) return null
+  const raw = String(v).trim()
+  if (!raw) return null
+
+  const mmddyyyy = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/)
+  if (mmddyyyy) {
+    const [, mm, dd, yyyy] = mmddyyyy
+    const d = new Date(Number(yyyy), Number(mm) - 1, Number(dd))
+    return Number.isNaN(d.getTime()) ? null : d
+  }
+
+  const d = new Date(raw)
+  return Number.isNaN(d.getTime()) ? null : d
+}
+
+function monthKey(dateObj: Date | null) {
+  if (!dateObj) return "Unknown"
+  return dateObj.toLocaleDateString("en-US", { month: "short", year: "numeric" })
 }
 
 function txKind(row: Row): TxKind {
   const t = (row.Type ?? "").toLowerCase()
   const memo = `${row.Memo ?? ""} ${row.Payee ?? ""} ${row.Added_in_Banking ?? ""}`.toLowerCase()
+  const deposit = parseAmount(row.Deposit)
+  const payment = parseAmount(row.Payment)
 
   if (t.includes("transfer") || memo.includes("transfer")) return "transfers"
-  if (parseAmount(row.Deposit) > 0) return "ar"
-  if (parseAmount(row.Payment) > 0) return "ap"
+  if (deposit > 0) return "ar"
+  if (payment > 0) return "ap"
   return "misc"
+}
+
+function classifyTransfer(row: Row): { kind: TxKind; notes: string; reviewStatus: ReviewStatus } {
+  const memo = `${row.Memo ?? ""} ${row.Payee ?? ""} ${row.Added_in_Banking ?? ""}`.toLowerCase()
+  const t = (row.Type ?? "").toLowerCase()
+  const payment = parseAmount(row.Payment)
+  const deposit = parseAmount(row.Deposit)
+
+  if (memo.includes("owner") || memo.includes("draw") || memo.includes("withdraw")) {
+    return { kind: "owner_draw", notes: "Likely owner draw / distribution", reviewStatus: "needs_review" }
+  }
+
+  if (memo.includes("vendor") || memo.includes("invoice") || t.includes("bill") || t.includes("expense")) {
+    return { kind: "vendor_payment", notes: "Likely business vendor payment", reviewStatus: "needs_review" }
+  }
+
+  if (t.includes("transfer") && payment > 0 && deposit === 0) {
+    return { kind: "internal_transfer", notes: "Likely internal transfer out", reviewStatus: "needs_review" }
+  }
+
+  if (t.includes("transfer") && deposit > 0 && payment === 0) {
+    return { kind: "internal_transfer", notes: "Likely internal transfer in", reviewStatus: "needs_review" }
+  }
+
+  return { kind: "transfers", notes: "Needs manual review", reviewStatus: "needs_review" }
 }
 
 function money(v: number) {
@@ -89,6 +138,7 @@ export default function Home() {
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState("")
   const [filter, setFilter] = React.useState<"all" | TxKind>("all")
+  const [showReviewOnly, setShowReviewOnly] = React.useState(false)
 
   React.useEffect(() => {
     const supabase = createClient()
@@ -116,25 +166,34 @@ export default function Home() {
   }, [])
 
   const txRows = React.useMemo<TxRow[]>(() => {
-    return rows.map((r) => {
-      const kind = txKind(r)
-      const ar = parseAmount(r.Deposit)
-      const ap = parseAmount(r.Payment)
-      const amount = ar > 0 ? ar : ap > 0 ? ap : 0
+    return rows
+      .map((r) => {
+        const dateObj = parseDate(r.Date_Value)
+        const kind = txKind(r)
+        const review = kind === "transfers" ? classifyTransfer(r) : { kind, notes: "", reviewStatus: "confirmed" as ReviewStatus }
+        const ar = parseAmount(r.Deposit)
+        const ap = parseAmount(r.Payment)
+        const amount = ar > 0 ? ar : ap > 0 ? ap : 0
 
-      return {
-        ...r,
-        kind,
-        amount,
-        month: monthKey(r.Date_Value),
-      }
-    })
+        return {
+          ...r,
+          kind: review.kind,
+          amount,
+          month: monthKey(dateObj),
+          dateObj,
+          reviewStatus: review.reviewStatus,
+          notes: review.notes,
+        }
+      })
+      .sort((a, b) => (b.dateObj?.getTime() ?? 0) - (a.dateObj?.getTime() ?? 0))
   }, [rows])
 
   const filteredRows = React.useMemo(() => {
-    if (filter === "all") return txRows
-    return txRows.filter((r) => r.kind === filter)
-  }, [txRows, filter])
+    let out = txRows
+    if (filter !== "all") out = out.filter((r) => r.kind === filter)
+    if (showReviewOnly) out = out.filter((r) => r.reviewStatus === "needs_review")
+    return out
+  }, [txRows, filter, showReviewOnly])
 
   const monthly = React.useMemo(() => {
     const map = new Map<string, MonthlyRow>()
@@ -285,9 +344,7 @@ export default function Home() {
                       key={key}
                       onClick={() => setFilter(key as "all" | TxKind)}
                       className={`rounded-full px-4 py-2 text-sm font-medium ${
-                        filter === key
-                          ? "bg-slate-900 text-white"
-                          : "bg-slate-100 text-slate-700 hover:bg-slate-200"
+                        filter === key ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                       }`}
                     >
                       {label}
@@ -295,6 +352,11 @@ export default function Home() {
                   ))}
                 </div>
               </div>
+
+              <label className="mb-4 flex items-center gap-2 text-sm text-slate-700">
+                <input type="checkbox" checked={showReviewOnly} onChange={(e) => setShowReviewOnly(e.target.checked)} />
+                Show review only
+              </label>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -304,6 +366,7 @@ export default function Home() {
                       <th className="p-2 text-left">Payee</th>
                       <th className="p-2 text-left">Memo</th>
                       <th className="p-2 text-left">Category</th>
+                      <th className="p-2 text-left">Review</th>
                       <th className="p-2 text-left">Amount</th>
                       <th className="p-2 text-left">Account</th>
                     </tr>
@@ -311,7 +374,7 @@ export default function Home() {
                   <tbody>
                     {filteredRows.map((r) => (
                       <tr key={r.id} className="border-b">
-                        <td className="p-2">{r.Date_Value || ""}</td>
+                        <td className="p-2">{r.dateObj ? r.dateObj.toLocaleDateString("en-US") : r.Date_Value || ""}</td>
                         <td className="p-2">{r.Payee || ""}</td>
                         <td className="p-2">{r.Memo || ""}</td>
                         <td className="p-2">
@@ -323,11 +386,23 @@ export default function Home() {
                                   ? "bg-red-100 text-red-700"
                                   : r.kind === "transfers"
                                     ? "bg-yellow-100 text-yellow-700"
-                                    : "bg-slate-100 text-slate-700"
+                                    : r.kind === "owner_draw"
+                                      ? "bg-blue-100 text-blue-700"
+                                      : r.kind === "vendor_payment"
+                                        ? "bg-pink-100 text-pink-700"
+                                        : r.kind === "internal_transfer"
+                                          ? "bg-violet-100 text-violet-700"
+                                          : "bg-slate-100 text-slate-700"
                             }`}
                           >
                             {r.kind.toUpperCase()}
                           </span>
+                        </td>
+                        <td className="p-2">
+                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${r.reviewStatus === "needs_review" ? "bg-amber-100 text-amber-700" : "bg-emerald-100 text-emerald-700"}`}>
+                            {r.reviewStatus === "needs_review" ? "Needs review" : "Confirmed"}
+                          </span>
+                          {r.notes ? <div className="mt-1 text-xs text-slate-500">{r.notes}</div> : null}
                         </td>
                         <td className="p-2">${r.amount.toLocaleString()}</td>
                         <td className="p-2">{r.Bank_Accounts || ""}</td>
