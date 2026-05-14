@@ -829,7 +829,11 @@ function Th({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Td({ children, style, ...props }: TdHTMLAttributes<HTMLTableCellElement>)  {
+function Td({
+  children,
+  style,
+  ...props
+}: React.TdHTMLAttributes<HTMLTableCellElement>) {
   return (
     <td
       {...props}
@@ -842,7 +846,5 @@ function Td({ children, style, ...props }: TdHTMLAttributes<HTMLTableCellElement
     >
       {children}
     </td>
-  );
-}
   );
 }
