@@ -2,6 +2,7 @@
 
 import { useMemo, useState } from "react";
 import Papa from "papaparse";
+import type { TdHTMLAttributes } from "react";
 
 type Row = {
   id?: string;
@@ -828,10 +829,22 @@ function Th({ children }: { children: React.ReactNode }) {
   );
 }
 
-function Td({ children }: { children: React.ReactNode }) {
+import type { TdHTMLAttributes } from "react";
+
+function Td({ children, style, ...props }: TdHTMLAttributes<HTMLTableCellElement>)  {
   return (
-    <td style={{ padding: "12px 16px", borderBottom: `1px solid ${colors.border}`, fontSize: 14 }}>
+    <td
+      {...props}
+      style={{
+        padding: "12px 16px",
+        borderBottom: `1px solid ${colors.border}`,
+        fontSize: 14,
+        ...style,
+      }}
+    >
       {children}
     </td>
+  );
+}
   );
 }
