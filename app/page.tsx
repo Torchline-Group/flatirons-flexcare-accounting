@@ -44,6 +44,9 @@ type TxRow = Row & {
   amount: number
   dateObj: Date | null
   month: string
+  categoryLabel: string
+  categoryClass: string
+  isTransferReview: boolean
 }
 
 type MonthlyRow = {
@@ -64,6 +67,7 @@ const COLORS = {
   vendor: "#fef9c3",
   owner: "#dbeafe",
   net: "#111827",
+  transfer: "#e5e7eb",
 }
 
 function parseAmount(v: string | null | undefined) {
@@ -111,7 +115,7 @@ function categoryLabel(cat: Category | null) {
   }
 }
 
-function categoryColor(cat: Category | null) {
+function categoryClass(cat: Category | null) {
   switch (cat) {
     case "accounts_receivable":
       return "bg-green-100 text-green-700"
@@ -126,12 +130,17 @@ function categoryColor(cat: Category | null) {
   }
 }
 
+function isTransferLike(row: Row) {
+  const memo = `${row.Memo ?? ""} ${row.Payee ?? ""} ${row.Added_in_Banking ?? ""}`.toLowerCase()
+  const type = (row.Type ?? "").toLowerCase()
+  return memo.includes("transfer") || type.includes("transfer")
+}
+
 export default function Home() {
   const [rows, setRows] = React.useState<Row[]>([])
   const [loading, setLoading] = React.useState(true)
   const [error, setError] = React.useState("")
-  const [filter, setFilter] = React.useState<"all" | Category>("all")
-  const [showOwnerOnly, setShowOwnerOnly] = React.useState(false)
+  const [filter, setFilter] = React.useState<"all" | Category | "transfer_review">("all")
 
   React.useEffect(() => {
     const supabase = createClient()
@@ -164,23 +173,39 @@ export default function Home() {
       .map((r) => {
         const dateObj = parseDate(r.Date_Value)
         const amount = parseAmount(r.Deposit) > 0 ? parseAmount(r.Deposit) : parseAmount(r.Payment)
+        const transferLike = isTransferLike(r)
+
+        let categoryLabelText = "Transfer Review"
+        let categoryClassText = "bg-slate-100 text-slate-700"
+
+        if (transferLike) {
+          categoryLabelText = "Transfer Review"
+          categoryClassText = "bg-slate-200 text-slate-700"
+        } else {
+          categoryLabelText = categoryLabel(r.category)
+          categoryClassText = categoryClass(r.category)
+        }
 
         return {
           ...r,
           amount,
           dateObj,
           month: monthKey(dateObj),
+          categoryLabel: categoryLabelText,
+          categoryClass: categoryClassText,
+          isTransferReview: transferLike,
         }
       })
       .sort((a, b) => (b.dateObj?.getTime() ?? 0) - (a.dateObj?.getTime() ?? 0))
   }, [rows])
 
-  const filteredRows = React.useMemo(() => {
-    let out = txRows
-    if (filter !== "all") out = out.filter((r) => r.category === filter)
-    if (showOwnerOnly) out = out.filter((r) => r.category === "owner_withdrawal")
-    return out
-  }, [txRows, filter, showOwnerOnly])
+  const visibleRows = React.useMemo(() => {
+    if (filter === "all") return txRows
+    if (filter === "transfer_review") return txRows.filter((r) => r.isTransferReview)
+    return txRows.filter((r) => r.category === filter && !r.isTransferReview)
+  }, [txRows, filter])
+
+  const transferRows = React.useMemo(() => txRows.filter((r) => r.isTransferReview), [txRows])
 
   const monthly = React.useMemo(() => {
     const map = new Map<string, MonthlyRow>()
@@ -212,10 +237,10 @@ export default function Home() {
   }, [txRows])
 
   const totals = React.useMemo(() => {
-    const ar = txRows.filter((r) => r.category === "accounts_receivable").reduce((s, r) => s + r.amount, 0)
-    const ap = txRows.filter((r) => r.category === "accounts_payable").reduce((s, r) => s + r.amount, 0)
-    const vendor = txRows.filter((r) => r.category === "vendor_payment").reduce((s, r) => s + r.amount, 0)
-    const owner = txRows.filter((r) => r.category === "owner_withdrawal").reduce((s, r) => s + r.amount, 0)
+    const ar = txRows.filter((r) => r.category === "accounts_receivable" && !r.isTransferReview).reduce((s, r) => s + r.amount, 0)
+    const ap = txRows.filter((r) => r.category === "accounts_payable" && !r.isTransferReview).reduce((s, r) => s + r.amount, 0)
+    const vendor = txRows.filter((r) => r.category === "vendor_payment" && !r.isTransferReview).reduce((s, r) => s + r.amount, 0)
+    const owner = txRows.filter((r) => r.category === "owner_withdrawal" && !r.isTransferReview).reduce((s, r) => s + r.amount, 0)
 
     const operatingNet = ar - ap - vendor
     const squareOneNet = ar - ap - vendor - owner
@@ -325,10 +350,11 @@ export default function Home() {
                     ["accounts_payable", "AP"],
                     ["vendor_payment", "Vendor"],
                     ["owner_withdrawal", "Owner"],
+                    ["transfer_review", "Transfers"],
                   ].map(([key, label]) => (
                     <button
                       key={key}
-                      onClick={() => setFilter(key as "all" | Category)}
+                      onClick={() => setFilter(key as "all" | Category | "transfer_review")}
                       className={`rounded-full px-4 py-2 text-sm font-medium ${
                         filter === key ? "bg-slate-900 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"
                       }`}
@@ -338,15 +364,6 @@ export default function Home() {
                   ))}
                 </div>
               </div>
-
-              <label className="mb-4 flex items-center gap-2 text-sm text-slate-700">
-                <input
-                  type="checkbox"
-                  checked={showOwnerOnly}
-                  onChange={(e) => setShowOwnerOnly(e.target.checked)}
-                />
-                Show owner withdrawals only
-              </label>
 
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
@@ -361,16 +378,47 @@ export default function Home() {
                     </tr>
                   </thead>
                   <tbody>
-                    {filteredRows.map((r) => (
+                    {visibleRows.map((r) => (
                       <tr key={r.id} className="border-b">
                         <td className="p-2">{r.dateObj ? r.dateObj.toLocaleDateString("en-US") : r.Date_Value || ""}</td>
                         <td className="p-2">{r.Payee || ""}</td>
                         <td className="p-2">{r.Memo || ""}</td>
                         <td className="p-2">
-                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${categoryColor(r.category)}`}>
-                            {categoryLabel(r.category)}
+                          <span className={`rounded-full px-2 py-1 text-xs font-medium ${r.isTransferReview ? COLORS.transfer : r.categoryClass}`}>
+                            {r.isTransferReview ? "Transfer Review" : r.categoryLabel}
                           </span>
                         </td>
+                        <td className="p-2">{money(r.amount)}</td>
+                        <td className="p-2">{r.Bank_Accounts || ""}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </section>
+
+            <section className="rounded-lg border bg-white p-4">
+              <h2 className="mb-4 text-lg font-semibold">Transfers to Review</h2>
+              <p className="mb-4 text-sm text-slate-600">
+                These rows look like transfers and are intentionally left uncategorized so you can classify them manually.
+              </p>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr className="border-b bg-slate-100">
+                      <th className="p-2 text-left">Date</th>
+                      <th className="p-2 text-left">Payee</th>
+                      <th className="p-2 text-left">Memo</th>
+                      <th className="p-2 text-left">Amount</th>
+                      <th className="p-2 text-left">Account</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {transferRows.map((r) => (
+                      <tr key={r.id} className="border-b">
+                        <td className="p-2">{r.dateObj ? r.dateObj.toLocaleDateString("en-US") : r.Date_Value || ""}</td>
+                        <td className="p-2">{r.Payee || ""}</td>
+                        <td className="p-2">{r.Memo || ""}</td>
                         <td className="p-2">{money(r.amount)}</td>
                         <td className="p-2">{r.Bank_Accounts || ""}</td>
                       </tr>
